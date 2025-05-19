@@ -1,0 +1,18 @@
+(* hello.pv: Hello World Script *)
+
+(* 声明公共信道 *)
+free c : channel.
+
+(* 声明两个私有的密钥 *)
+free Cocks : bitstring [private].
+free RSA   : bitstring [private].
+
+(* 查询：攻击者能否获得这两个密钥？ *)
+query attacker(RSA).
+query attacker(Cocks).
+
+(* 主过程 *)
+process
+  out(c, RSA);
+  0
+

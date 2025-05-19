@@ -1,0 +1,36 @@
+(* 类型定义 *)
+type key.
+type sessionkey.
+
+(* 加密定义 *)
+fun senc(sessionkey, key): bitstring.
+reduc forall k: key, sk: sessionkey; sdec(senc(sk, k), k) = sk.
+
+(* 通道与密钥 *)
+free c : channel.
+free k : key [private].
+
+(* 攻击者目标：sk 是攻击目标，不再是 new 生成 *)
+const sk : sessionkey.    (* 此 sk 不是 fresh，会被攻击者利用 *)
+
+(* 事件 *)
+event beginA(sessionkey).
+event endB(sessionkey).
+
+(* 查询：攻击者是否可知 sk？ *)
+query attacker(sk).       (* 会被攻击者间接获得 *)
+
+(* A 多次发送同一个 sk 的密文 *)
+let A =
+  event beginA(sk);
+  out(c, senc(sk, k)).
+
+(* B 接收并解密 *)
+let B =
+  in(c, m:bitstring);
+  let sk_recv = sdec(m, k) in
+  event endB(sk_recv).
+
+(* 主进程 *)
+process
+  (!A | !B)

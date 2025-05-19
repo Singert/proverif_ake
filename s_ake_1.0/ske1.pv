@@ -1,0 +1,72 @@
+(*DONE:*)
+(*TODO:*)
+(*加入 B → A 的认证、加入签名、或模拟恶意中间人，我可以继续帮助建模。是否继续？*)
+(*
+🔐 双向认证（A 验证 B）
+🔑 非对称密钥机制（RSA/签名）
+🤝 Diffie-Hellman 协议建模
+*)
+(* 类型定义 *)
+type key.
+type nonce.
+type sessionkey.
+
+(* 类型转换器：用于将 sessionkey 和 nonce 转换为 bitstring *)
+fun toBits(sessionkey): bitstring [typeConverter].
+fun nonceToBit(nonce): bitstring [typeConverter].
+(* 类型转换器：用于将 bitstring 转换为 sessionkey *)
+fun fromBits(bitstring): sessionkey [typeConverter].
+
+
+(* 构造器与还原规则 *)
+fun pair(bitstring, bitstring): bitstring.
+reduc forall x,y:bitstring; proj1(pair(x,y)) = x.
+reduc forall x,y:bitstring; proj2(pair(x,y)) = y.
+
+fun senc(bitstring, key): bitstring.
+reduc forall k: key, m: bitstring; sdec(senc(m, k), k) = m.
+
+(* 常量：身份标识符 *)
+const A_ID : bitstring.
+const B_ID : bitstring.
+
+(* 通道与共享密钥 *)
+free c : channel.
+free k : key [private].
+
+(* 事件声明：都用 bitstring 表示挑战 *)
+event beginA(bitstring, sessionkey).
+event endB(bitstring, sessionkey).
+
+(* 查询：机密性 + A 的认证性 *)
+query attacker(new sk).
+query nb: bitstring, sk: sessionkey; event(endB(nb, sk)) ==> event(beginA(nb, sk)).
+
+
+
+(* A 的进程：响应挑战、发送会话密钥 *)
+let A =
+  in(c, nb: bitstring);                        (* 接收 B 的挑战（bitstring 类型） *)
+  new sk: sessionkey;
+  event beginA(nb, sk);
+  let payload = pair(nb, toBits(sk)) in        (* 转换 sk 为 bitstring 再 pair *)
+  out(c, senc(payload, k)).
+
+(* B 的进程：发出挑战、验证 A 的响应 *)
+let B =
+  out(c, A_ID);
+  new nb: nonce;
+  out(c, nonceToBit(nb));                      (* 发送 nonce，经转换后作为 bitstring *)
+  in(c, reply: bitstring);
+  let payload = sdec(reply, k) in
+  let rcv_nb = proj1(payload) in
+  let sk = proj2(payload) in
+  if rcv_nb = nonceToBit(nb) then
+    event endB(rcv_nb, fromBits(sk))
+  else
+    0.
+
+(* 主进程 *)
+process
+  (!A | !B)
+

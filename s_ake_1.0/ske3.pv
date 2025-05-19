@@ -1,0 +1,306 @@
+const A_ID : bitstring.
+
+(* 类型 *)
+type key.
+type nonce.
+type sessionkey.
+
+(* 类型转换器 *)
+fun toBits(sessionkey): bitstring [typeConverter].
+fun fromBits(bitstring): sessionkey [typeConverter].
+fun nonceToBit(nonce): bitstring [typeConverter].
+
+(* 构造器与解构器 *)
+fun pair(bitstring, bitstring): bitstring.
+reduc forall x,y:bitstring; proj1(pair(x,y)) = x.
+reduc forall x,y:bitstring; proj2(pair(x,y)) = y.
+
+fun senc(bitstring, key): bitstring.
+reduc forall k: key, m: bitstring; sdec(senc(m, k), k) = m.
+
+(* 通道与密钥 *)
+free c: channel.
+free k: key [private].
+
+(* 事件 *)
+event beginA(bitstring, bitstring, sessionkey).
+event endB(bitstring, bitstring, sessionkey).
+event beginB(bitstring).
+event endA(bitstring, sessionkey).
+
+(* 查询 *)
+query attacker(new sk).
+query na: bitstring, nb: bitstring, sk: sessionkey;
+      event(endB(na, nb, sk)) ==> event(beginA(na, nb, sk)).
+query na: bitstring, sk: sessionkey;
+      event(endA(na, sk)) ==> event(beginB(na)).
+
+(* A 的过程 *)
+let A =
+  out(c, A_ID);
+  in(c, nb: bitstring);                  (* 收到 B 的挑战 *)
+  new na: nonce;
+  new sk: sessionkey;
+  event beginA(nonceToBit(na), nb, sk);
+  let payload = pair(nonceToBit(na), pair(nb, toBits(sk))) in
+  out(c, senc(payload, k));
+  in(c, resp: bitstring);               (* 收到对 na 的回应 *)
+  let r = sdec(resp, k) in
+  if r = nonceToBit(na) then
+    event endA(nonceToBit(na), sk)
+  else 0.
+
+(* B 的过程 *)
+let B =
+  in(c, id: bitstring);                 (* 接收到 A 的身份 *)
+  new nb: nonce;
+  event beginB(nonceToBit(nb));
+  out(c, nonceToBit(nb));
+  in(c, reply: bitstring);
+  let payload = sdec(reply, k) in
+  let na = proj1(payload) in
+  let pair2 = proj2(payload) in
+  let rcv_nb = proj1(pair2) in
+  let sk = fromBits(proj2(pair2)) in
+  if rcv_nb = nonceToBit(nb) then
+    event endB(na, rcv_nb, sk);
+    out(c, senc(na, k))                 (* 回应 na *)
+  else 0.
+
+(* 主过程 *)
+process
+  (!A | !B)
+(*
+你当前这份（经过修正的）ProVerif 模型实现的是一个**对称密钥基础上的双向认证 + 会话密钥协商协议**，它在经典挑战-应答的基础上进行了增强，具有以下关键功能与结构：
+
+---
+
+## ✅ 协议的核心目标：
+
+> 在共享对称密钥 `k` 的前提下，**实现通信双方 A 和 B 的身份互相认证**，并由 A 安全地向 B 分发一个**新生成的保密会话密钥 `sk`**。
+
+---
+
+## 🔐 协议功能总结：
+
+| 功能          | 是否实现 | 描述                       |
+| ----------- | ---- | ------------------------ |
+| 会话密钥协商 `sk` | ✅ 是  | A 生成 `sk`，通过 `k` 加密发送给 B |
+| A 认证 B 的身份  | ✅ 是  | B 提供挑战 `nb`，A 回应         |
+| B 认证 A 的身份  | ✅ 是  | A 提供挑战 `na`，B 回应         |
+| 会话密钥保密性     | ✅ 是  | `sk` 用 `k` 加密，攻击者无法获得    |
+
+---
+
+## 🔄 协议流程结构（简化）
+
+```text
+Step 1: A → B : A_ID             // A 表明身份（可选）
+Step 2: B → A : nb               // B 发起挑战（nonce）
+Step 3: A → B : {na, nb, sk}_k   // A 生成挑战 na 和 sk，并加密回应
+Step 4: B → A : {na}_k           // B 解密得到 na，并返回确认
+```
+
+---
+
+## 🧭 协议内部结构分析
+
+### A 进程：
+
+1. 接收 B 发来的 `nb`；
+2. 生成自己的挑战 `na` 和会话密钥 `sk`；
+3. 构造消息 `payload = (na, (nb, sk))`，整体用 `k` 加密；
+4. 发送密文给 B；
+5. 等待 B 回传的 `na`，确认回应；
+6. 事件 `endA(na, sk)`：**A 认证 B 的身份**。
+
+### B 进程：
+
+1. 接收 A 的身份（可选）；
+2. 生成挑战 `nb`，记录 `beginB(nb)`；
+3. 发送 `nb` 给 A；
+4. 接收加密回应，解密出 `(na, nb, sk)`；
+5. 校验 nb 是否匹配自己发出的；
+6. 若成功：记录事件 `endB(na, nb, sk)`，回发 `na`；
+7. A 解密验证成功，双方均获得 `sk`。
+
+---
+
+## 🛡️ 安全性质验证（ProVerif 查询）
+
+1. **密钥保密性**
+
+   ```proverif
+   query attacker(new sk).
+   ```
+
+   ✅ 若返回 false，表示攻击者无法获得 sk。
+
+2. **B 认证 A**
+
+   ```proverif
+   query na, nb, sk; event(endB(na, nb, sk)) ==> event(beginA(na, nb, sk)).
+   ```
+
+   ✅ B 只在 A 正确回应挑战后才接受 `sk`。
+
+3. **A 认证 B**
+
+   ```proverif
+   query na, sk; event(endA(na, sk)) ==> event(beginB(na)).
+   ```
+
+   ✅ A 只在 B 发出过 na 的挑战后才确认。
+
+---
+
+## 🔄 协议类型归类
+
+该协议属于以下类别：
+
+| 类别     | 类型                       |
+| ------ | ------------------------ |
+| 密钥交换协议 | 单向密钥分发（由 A 发起）           |
+| 认证协议   | 双向认证                     |
+| 加密机制   | 对称密钥加密（预共享密钥）            |
+| 安全模型   | Dolev-Yao 攻击者模型（可完全控制信道） |
+
+---
+
+## ✅ 应用场景示例：
+
+* **IoT 安全接入**：设备 A 与网关 B 完成认证 + 会话密钥建立；
+* **VPN 会话启动**：客户端与服务器协商安全通道密钥；
+* **军事通信系统**：便携设备在有限连接下完成安全身份认证；
+* **嵌入式系统对接**：使用硬编码密钥进行入网认证。
+
+---
+
+如你希望我将此协议升级为 **非对称密钥版（使用公钥加密或签名）**，或基于 **Diffie-Hellman** 做成可扩展密钥交换，我可以继续为你建模。是否继续？
+*)
+(*你提供的 ProVerif 输出结果显示了这个密钥交换与双向认证协议的**形式化验证结论**。我们来逐项分析并结合攻击路径解释它的含义。
+
+---
+
+## ✅ 第一项：密钥保密性验证
+
+```
+Query not attacker(sk[nb = v,!1 = v_1]) is true.
+```
+
+### ✅ 解释：
+
+攻击者无法获得会话密钥 `sk`。
+
+* `sk` 是由 A 使用 `new sk` 随机生成；
+* 通过 `senc(..., k)` 使用预共享密钥 `k` 进行加密；
+* 攻击者不知道 `k`，因此无法恢复 `sk`；
+* ProVerif 确证 **机密性成立**。
+
+---
+
+## ✅ 第二项：B 认证 A 成功
+
+```
+Query event(endB(na_2,nb_2,sk_2)) ==> event(beginA(na_2,nb_2,sk_2)) is true.
+```
+
+### ✅ 解释：
+
+当 B 记录事件 `endB(na, nb, sk)`（即成功接收并解密 `sk`）时，可以保证 A 之前已经执行过 `beginA(na, nb, sk)`。
+
+说明：
+
+* 攻击者无法伪造有效密文（因为需要用 `k` 加密正确的 `nb` 和 `sk`）；
+* **B 正确认证了 A 的身份和密钥来源**；
+* ✅ **A → B 的认证成立**。
+
+---
+
+## ❌ 第三项：A 认证 B 失败
+
+```
+Query event(endA(na_2,sk_2)) ==> event(beginB(na_2)) is false.
+```
+
+### ❌ 解释：
+
+A 在记录事件 `endA(na, sk)`（即确认完成认证、接受 `sk`）时，**B 不一定真的发出过该 nonce `na`**。
+
+ProVerif 给出的攻击路径是：
+
+---
+
+## 🧨 攻击推演路径（中间人攻击 / 重放攻击）
+
+### 攻击步骤如下：
+
+1. **攻击者知道身份标识 `A_ID`（是常量）**：
+
+   ```
+   attacker(id_1)
+   ```
+
+2. 攻击者模拟 B：
+
+   * 向 A 发起连接，发送伪造的 `nb_2`（攻击者从其他地方获取）；
+   * 接收 A 返回的 `{na, nb, sk}` 加密密文；
+   * 然后再次模拟 B，发送回 `senc(na, k)` 响应；
+   * 因为攻击者控制信道 `c`，所有消息都可以拦截/替换/重放。
+
+3. A 无法判断 `nb` 是否由真正的 B 发出，因此：
+
+   ```
+   event(endA(na_2, sk_2)) 发生，但 event(beginB(na_2)) 未发生。
+   ```
+
+---
+
+## 🛑 本质问题分析
+
+| 问题点                                  | 描述                  |
+| ------------------------------------ | ------------------- |
+| A 接收的 `nb` 来自 `in(c, nb: bitstring)` | 攻击者可伪造 nb           |
+| A 无法验证 nb 的来源                        | A 假设只要有人能回应 na 就是 B |
+| 攻击者利用这一点诱导 A 完成 endA                 | 但实际上 B 从未出现         |
+
+---
+
+## ✅ 安全属性分析总结
+
+| 安全属性       | 状态   | 说明                |
+| ---------- | ---- | ----------------- |
+| 会话密钥保密性    | ✅ 成立 | `sk` 安全未泄露        |
+| A → B 的认证性 | ✅ 成立 | B 只接受 A 发出的响应     |
+| B → A 的认证性 | ❌ 失败 | A 可能被攻击者伪造 B 响应欺骗 |
+
+---
+
+## 🔧 修复建议
+
+为让 A 确认 B 的身份（防止伪造 nonce `nb`），可采取以下方法：
+
+### 方法 1：B 签名 nonce
+
+```text
+B → A : nb, Sign_B(nb)
+```
+
+* A 验签确认 nb 来源；
+* 实现强 B → A 身份认证。
+
+### 方法 2：加入身份绑定
+
+* A 检查 `{nb, B_ID}` 是否加密绑定在消息中；
+* 避免攻击者转发/伪造。
+
+### 方法 3：反转挑战方向
+
+* A 发 challenge `na`；
+* B 响应 `na` + sk；
+* 避免 A 被动接收伪造消息。
+
+---
+
+如你希望我帮助你**构建一个加强认证的版本（例如带签名或双向 challenge-response 的非对称协议）**，我可以立即帮你建模。是否继续？
+*)

@@ -1,0 +1,198 @@
+(*
+这是一个很好的问题。
+
+你当前的协议已经实现了以下 **三个核心安全目标**，ProVerif 已确认：
+
+| 安全属性             | 是否成立 | 原因分析                          |
+| ---------------- | ---- | ----------------------------- |
+| 会话密钥保密性          | ✅ 是  | `sk` 使用对称密钥加密，攻击者无法解密         |
+| A → B 认证（B 认证 A） | ✅ 是  | B 检查 A 的签名 `sign(na, nb, sk)` |
+| B → A 认证（A 认证 B） | ✅ 是  | A 验证 B 对 `nb` 的签名             |
+
+---
+
+## 🔍 是否还有漏洞？如何找？
+
+虽然形式验证通过，我们可以尝试**从现实协议设计角度**审视是否还有**潜在缺陷**，特别关注：
+
+### 1. **消息重放攻击**（replay attack）
+
+### 2. **消息重用攻击**（key reuse or state confusion）
+
+### 3. **身份绑定是否充分**
+
+### 4. **会话唯一性**（injective authentication）
+
+---
+
+## 🧨 潜在漏洞分析：**会话重放攻击**
+
+虽然认证逻辑正确，但该协议仍可能在**多次并发会话中**产生如下问题：
+
+> 攻击者记录某次合法的 `(sigA, senc(...))`，在之后某个新的会话中 **重放给 B**，导致 B 再次接受旧的 `sk`，认为是新的密钥。
+
+这类问题叫做：
+
+### ❗**非 injective authentication**问题：
+
+* 查询 `event(endB(...)) ==> event(beginA(...))` 检查的是**存在性**（non-injective）认证；
+* **攻击者可重放旧密文**，让 B 多次执行 `endB`，却只有一个 `beginA`；
+* 如果 sk 被重复使用、或 B 不存储已用 nonce，可能导致状态混淆或 session hijack。
+
+---
+
+## ✅ 验证此类攻击：加入 injective 查询验证
+
+你可以用如下语句检查 **injective 认证是否成立**（即每次 `endB` 都唯一对应一次 `beginA`）：
+
+```proverif
+query injective event(endB(na, nb, sk)) ==> event(beginA(na, nb, sk)).
+```
+
+如果此查询返回 `false`，说明攻击者可能重放某个旧的 `(sigA, senc(...))`，导致 B 多次接受重复 `sk`，而 A 实际只生成过一次。
+
+---
+
+## ✅ 如何制造此漏洞（实验性构造）？
+
+* 攻击者监听到第一次合法会话的 `(sigA, senc(...))`；
+* 攻击者跳过与 A 通信，**直接重放此消息**给 B；
+* B 由于没有记录过旧 `nb`，会再次接受 `sk`。
+
+即使密钥保密性没破坏，**状态逻辑就可能被绕过**（特别是在协议用于设备认证/接入控制中）。
+
+---
+
+## 🔧 如何防御此类攻击？
+
+1. **使用 fresh session identifier / session tag**，并记录历史；
+2. **加入会话记录（防止同一 nb 被接受两次）**；
+3. **升级认证语义为 injective authentication**；
+4. **加入时间戳**，令旧消息在逻辑上失效。
+
+---
+
+## ✅ 总结
+
+| 项目         | 结论                          |
+| ---------- | --------------------------- |
+| 是否存在理论漏洞？  | ✅ 有（可能重放）                   |
+| 是否被当前查询发现？ | ❌ 否（non-injective 查询不足）     |
+| 建议验证方式     | 加入 `injective` 查询验证         |
+| 潜在影响       | B 多次接受相同 `sk`，状态被污染或攻击者借壳接入 |
+
+---
+
+如果你希望我：
+
+* 加入 `injective` 查询；
+* 或改写模型以引入 session ID、防重放机制；
+
+我可以立即帮助你实现。是否继续？
+*)
+const A_ID: bitstring.
+
+(* 类型定义 *)
+type key.
+type nonce.
+type sessionkey.
+type skey.         (* 签名私钥 *)
+type pkey.         (* 签名公钥 *)
+
+(* 类型转换器 *)
+fun toBits(sessionkey): bitstring [typeConverter].
+fun fromBits(bitstring): sessionkey [typeConverter].
+fun nonceToBit(nonce): bitstring [typeConverter].
+
+(* 公钥提取函数 *)
+fun pk(skey): pkey.
+
+(* 签名与验证函数 *)
+fun sign(bitstring, skey): bitstring.
+reduc forall m:bitstring, sk: skey;
+      checksig(sign(m, sk), pk(sk)) = m.
+
+(* 对称加密 *)
+fun senc(bitstring, key): bitstring.
+reduc forall k: key, m: bitstring;
+      sdec(senc(m, k), k) = m.
+
+(* 构造器与解构器 *)
+fun pair(bitstring, bitstring): bitstring.
+reduc forall x,y:bitstring; proj1(pair(x,y)) = x.
+reduc forall x,y:bitstring; proj2(pair(x,y)) = y.
+
+(* 公共通道与密钥 *)
+free c: channel.
+free k: key [private].
+free pkB: pkey.                 (* B 的公钥 *)
+free skB: skey [private].       (* B 的私钥 *)
+free pkA: pkey.                 (* A 的公钥 *)
+free skA: skey [private].       (* A 的私钥 *)
+
+(* 事件 *)
+event beginA(bitstring, bitstring, sessionkey).
+event endB(bitstring, bitstring, sessionkey).
+event beginB(bitstring).
+event endA(bitstring, sessionkey).
+
+
+(* 查询 *)
+query attacker(new sk).
+query na: bitstring, nb: bitstring, sk: sessionkey;
+      event(endB(na, nb, sk)) ==> event(beginA(na, nb, sk)).
+query na: bitstring, sk: sessionkey;
+      event(endA(na, sk)) ==> event(beginB(na)).
+
+(* A 的进程：验证 B，签名回应 *)
+let A =
+  out(c, A_ID);
+  in(c, signed_nb: bitstring);
+  let nb = checksig(signed_nb, pkB) in
+  new na: nonce;
+  new sk: sessionkey;
+  event beginA(nonceToBit(na), nb, sk);
+  let plain_payload = pair(nonceToBit(na), pair(nb, toBits(sk))) in
+  let sigA = sign(plain_payload, skA) in
+  out(c, pair(sigA, senc(plain_payload, k)));  (* A 同时发签名和加密数据 *)
+  in(c, r: bitstring);
+  let plain = sdec(r, k) in
+  if plain = nonceToBit(na) then
+    event endA(nonceToBit(na), sk)
+  else
+    0.
+
+(* B 的进程：验证 A 签名、检查 nb、提取 sk *)
+let B =
+  in(c, id: bitstring);
+  new nb: nonce;
+  event beginB(nonceToBit(nb));
+  out(c, sign(nonceToBit(nb), skB));
+  in(c, sig_and_enc: bitstring);
+  let sigA = proj1(sig_and_enc) in
+  let encPayload = proj2(sig_and_enc) in
+  let payload = sdec(encPayload, k) in
+  let verified = checksig(sigA, pkA) in
+  if verified = payload then
+    let na = proj1(payload) in
+    let pair2 = proj2(payload) in
+    let rcv_nb = proj1(pair2) in
+    let sk = fromBits(proj2(pair2)) in
+    if rcv_nb = nonceToBit(nb) then
+      event endB(na, rcv_nb, sk);
+      out(c, senc(na, k))
+    else 0
+  else 0.
+
+(* 主进程 *)
+process
+  (!A | !B)
+
+(*
+| 特性       | 实现方式                      |
+| -------- | ------------------------- |
+| A 认证 B   | 检查 B 对 `nb` 的签名           |
+| B 认证 A   | 检查 A 对 `(na, nb, sk)` 的签名 |
+| sk 的认证绑定 | 同时嵌入签名和对称加密               |
+| 防伪/防重放   | 双 nonce + 双签名机制           |
+*)

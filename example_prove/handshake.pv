@@ -1,0 +1,38 @@
+(* 类型定义 *)
+type key.
+
+(* 函数声明：对称加密与解密 *)
+fun senc(bitstring, key): bitstring.
+reduc forall m:bitstring, k:key; sdec(senc(m, k), k) = m.
+
+(* 常量 *)
+const hello: bitstring.
+
+(* 通道与密钥 *)
+free c: channel.
+free k: key [private].
+
+(* 事件 *)
+event beginA().
+event endB().
+
+(* 查询必须在 process 之前 *)
+query event(endB()) ==> event(beginA()).
+
+(* 过程 A *)
+let A =
+  event beginA();
+  out(c, senc(hello, k)).
+
+(* 过程 B *)
+let B =
+  in(c, m:bitstring);
+  let x = sdec(m, k) in
+  if x = hello then
+    event endB()
+  else
+    0.
+
+(* 主进程 *)
+process
+  (!A | !B)

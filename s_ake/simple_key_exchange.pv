@@ -1,0 +1,36 @@
+(* 类型定义 *)
+type key.                  (* 密钥类型 *)
+type sessionkey.           (* 会话密钥类型 *)
+
+(* 函数定义 *)
+fun senc(sessionkey, key): bitstring.
+reduc forall k: key, sk: sessionkey; sdec(senc(sk, k), k) = sk.
+
+(* 通道与密钥 *)
+free c : channel.                (* 公共信道 *)
+free k : key [private].          (* 预共享密钥，攻击者不知道 *)
+
+(* 会话密钥 sk 由 A 生成 *)
+(* 事件声明（可选） *)
+event beginA(sessionkey).
+event endB(sessionkey).
+
+(* 安全性查询：攻击者是否能知道 sk？ *)
+(* sk 会在 A 进程中通过 new 随机生成 *)
+query attacker(new sk).
+
+(* A：生成 sk，发送加密 sk *)
+let A =
+  new sk:sessionkey;
+  event beginA(sk);
+  out(c, senc(sk, k)).
+
+(* B：接收、解密 sk *)
+let B =
+  in(c, m:bitstring);
+  let sk = sdec(m, k) in
+  event endB(sk).
+
+(* 主进程：并发执行 A 与 B *)
+process
+  (!A | !B)

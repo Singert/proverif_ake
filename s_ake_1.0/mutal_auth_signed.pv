@@ -1,0 +1,115 @@
+(* 协议流程如下
+A → B : A_ID
+B → A : Sign_B(nb)
+A → B : Sign_A(na, nb, sk), Enc(na, nb, sk)_k
+B → A : Enc(na)_k
+*)
+
+const A_ID: bitstring.
+
+(* 类型定义 *)
+type key.
+type nonce.
+type sessionkey.
+type skey.         (* 签名私钥 *)
+type pkey.         (* 签名公钥 *)
+
+(* 类型转换器 *)
+fun toBits(sessionkey): bitstring [typeConverter].
+fun fromBits(bitstring): sessionkey [typeConverter].
+fun nonceToBit(nonce): bitstring [typeConverter].
+
+(* 公钥提取函数 *)
+fun pk(skey): pkey.
+
+(* 签名与验证函数 *)
+fun sign(bitstring, skey): bitstring.
+reduc forall m:bitstring, sk: skey;
+      checksig(sign(m, sk), pk(sk)) = m.
+
+(* 对称加密 *)
+fun senc(bitstring, key): bitstring.
+reduc forall k: key, m: bitstring;
+      sdec(senc(m, k), k) = m.
+
+(* 构造器与解构器 *)
+fun pair(bitstring, bitstring): bitstring.
+reduc forall x,y:bitstring; proj1(pair(x,y)) = x.
+reduc forall x,y:bitstring; proj2(pair(x,y)) = y.
+
+(* 公共通道与密钥 *)
+free c: channel.
+free k: key [private].
+free pkB: pkey.                 (* B 的公钥 *)
+free skB: skey [private].       (* B 的私钥 *)
+free pkA: pkey.                 (* A 的公钥 *)
+free skA: skey [private].       (* A 的私钥 *)
+
+(* 事件 *)
+event beginA(bitstring, bitstring, sessionkey).
+event endB(bitstring, bitstring, sessionkey).
+event beginB(bitstring).
+event endA(bitstring, sessionkey).
+
+(* 查询 *)
+query attacker(new sk).
+query na: bitstring, nb: bitstring, sk: sessionkey;
+      event(endB(na, nb, sk)) ==> event(beginA(na, nb, sk)).
+query na: bitstring, sk: sessionkey;
+      event(endA(na, sk)) ==> event(beginB(na)).
+      (*重放攻击*)
+query na: bitstring, nb: bitstring, sk: sessionkey;
+      inj-event(endB(na, nb, sk)) ==> inj-event(beginA(na, nb, sk)).
+
+(* A 的进程：验证 B，签名回应 *)
+let A =
+  out(c, A_ID);
+  in(c, signed_nb: bitstring);
+  let nb = checksig(signed_nb, pkB) in
+  new na: nonce;
+  new sk: sessionkey;
+  event beginA(nonceToBit(na), nb, sk);
+  let plain_payload = pair(nonceToBit(na), pair(nb, toBits(sk))) in
+  let sigA = sign(plain_payload, skA) in
+  out(c, pair(sigA, senc(plain_payload, k)));  (* A 同时发签名和加密数据 *)
+  in(c, r: bitstring);
+  let plain = sdec(r, k) in
+  if plain = nonceToBit(na) then
+    event endA(nonceToBit(na), sk)
+  else
+    0.
+
+(* B 的进程：验证 A 签名、检查 nb、提取 sk *)
+let B =
+  in(c, id: bitstring);
+  new nb: nonce;
+  event beginB(nonceToBit(nb));
+  out(c, sign(nonceToBit(nb), skB));
+  in(c, sig_and_enc: bitstring);
+  let sigA = proj1(sig_and_enc) in
+  let encPayload = proj2(sig_and_enc) in
+  let payload = sdec(encPayload, k) in
+  let verified = checksig(sigA, pkA) in
+  if verified = payload then
+    let na = proj1(payload) in
+    let pair2 = proj2(payload) in
+    let rcv_nb = proj1(pair2) in
+    let sk = fromBits(proj2(pair2)) in
+    if rcv_nb = nonceToBit(nb) then
+      event endB(na, rcv_nb, sk);
+      out(c, senc(na, k))
+    else 0
+  else 0.
+
+(* 主进程 *)
+process
+  (!A | !B)
+
+(*
+| 特性       | 实现方式                      |
+| -------- | ------------------------- |
+| A 认证 B   | 检查 B 对 `nb` 的签名           |
+| B 认证 A   | 检查 A 对 `(na, nb, sk)` 的签名 |
+| sk 的认证绑定 | 同时嵌入签名和对称加密               |
+| 防伪/防重放   | 双 nonce + 双签名机制           |
+*)

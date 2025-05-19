@@ -1,0 +1,274 @@
+(*
+| 方向    | 条件                  | 事件                             |
+| ----- | ------------------- | ------------------------------ |
+| A → B | B 收到加密消息中含有他发的 `nb` | `endB(nb, sk)`                 |
+| B → A | A 收到 B 的 `nb` 挑战    | `endA(nb, sk)`，认证 `beginB(nb)` |
+
+*)
+
+(*
+| 安全性质     | 说明                     |
+| -------- | ---------------------- |
+| sk 保密性   | 攻击者无法得知会话密钥            |
+| A → B 认证 | B 只在 A 正确响应挑战后接受       |
+| B → A 认证 | A 只在收到真正由 B 发出的 Nb 后响应 |
+*)
+
+(* 类型定义 *)
+type key.
+type nonce.
+type sessionkey.
+
+(* 类型转换器 *)
+fun toBits(sessionkey): bitstring [typeConverter].
+fun fromBits(bitstring): sessionkey [typeConverter].
+fun nonceToBit(nonce): bitstring [typeConverter].
+
+(* 构造器与还原规则 *)
+fun pair(bitstring, bitstring): bitstring.
+reduc forall x,y:bitstring; proj1(pair(x,y)) = x.
+reduc forall x,y:bitstring; proj2(pair(x,y)) = y.
+
+fun senc(bitstring, key): bitstring.
+reduc forall k: key, m: bitstring; sdec(senc(m, k), k) = m.
+
+(* 身份常量 *)
+const A_ID : bitstring.
+const B_ID : bitstring.
+
+(* 通道与密钥 *)
+free c : channel.
+free k : key [private].
+
+(* 事件 *)
+event beginA(bitstring, sessionkey).     (* A 收到挑战后发出消息 *)
+event endB(bitstring, sessionkey).       (* B 接收消息后认证 A *)
+event beginB(bitstring).                 (* B 发出挑战 Nb *)
+event endA(bitstring, sessionkey).       (* A 收到 Nb 后认证 B *)
+
+(* 查询 *)
+query attacker(new sk).
+
+(* A → B 的认证 *)
+query nb: bitstring, sk: sessionkey;
+      event(endB(nb, sk)) ==> event(beginA(nb, sk)).
+
+(* B → A 的认证 *)
+query nb: bitstring, sk: sessionkey;
+      event(endA(nb, sk)) ==> event(beginB(nb)).
+
+(* A 的进程 *)
+let A =
+  in(c, nb: bitstring);                        (* 收到 B 的挑战 Nb *)
+  new sk: sessionkey;
+  event beginA(nb, sk);
+  let payload = pair(nb, toBits(sk)) in
+  out(c, senc(payload, k));
+  event endA(nb, sk).                          (* A 认证 B *)
+
+(* B 的进程 *)
+let B =
+  out(c, A_ID);
+  new nb: nonce;
+  event beginB(nonceToBit(nb));                (* B 发出挑战 Nb *)
+  out(c, nonceToBit(nb));
+  in(c, reply: bitstring);
+  let payload = sdec(reply, k) in
+  let rcv_nb = proj1(payload) in
+  let sk = fromBits(proj2(payload)) in
+  if rcv_nb = nonceToBit(nb) then
+    event endB(rcv_nb, sk)
+  else
+    0.
+
+(* 主进程 *)
+process
+  (!A | !B)
+
+
+(*
+❯ proverif ske_1.0/ske2.pv
+Process 0 (that is, the initial process):
+(
+    {1}!
+    {2}in(c, nb: bitstring);
+    {3}new sk: sessionkey;
+    {4}event beginA(nb,sk);
+    {5}let payload: bitstring = pair(nb,sk) in
+    {6}out(c, senc(payload,k));
+    {7}event endA(nb,sk)
+) | (
+    {8}!
+    {9}out(c, A_ID);
+    {10}new nb_1: nonce;
+    {11}event beginB(nb_1);
+    {12}out(c, nb_1);
+    {13}in(c, reply: bitstring);
+    {14}let payload_1: bitstring = sdec(reply,k) in
+    {15}let rcv_nb: bitstring = proj1(payload_1) in
+    {16}let sk_1: sessionkey = proj2(payload_1) in
+    {17}if (rcv_nb = nb_1) then
+    {18}event endB(rcv_nb,sk_1)
+)
+
+-- Query not attacker(sk[nb = v,!1 = v_1]) in process 0.
+Translating the process into Horn clauses...
+Completing...                                                                 
+Starting query not attacker(sk[nb = v,!1 = v_1])                               
+RESULT not attacker(sk[nb = v,!1 = v_1]) is true.                            
+-- Query event(endB(nb_2,sk_2)) ==> event(beginA(nb_2,sk_2)) in process 0.
+Translating the process into Horn clauses...
+Completing...                                                                 
+Starting query event(endB(nb_2,sk_2)) ==> event(beginA(nb_2,sk_2))             
+goal reachable: b-event(beginA(nb_2,sk_2)) -> event(endB(nb_2,sk_2))         
+Abbreviations:
+nb_2 = nb_1[!1 = @sid]
+sk_2 = sk[nb = nb_2,!1 = @sid_1]
+RESULT event(endB(nb_2,sk_2)) ==> event(beginA(nb_2,sk_2)) is true.
+-- Query event(endA(nb_2,sk_2)) ==> event(beginB(nb_2)) in process 0.
+Translating the process into Horn clauses...
+Completing...                                                                 
+Starting query event(endA(nb_2,sk_2)) ==> event(beginB(nb_2))                  
+goal reachable: attacker(nb_2) -> event(endA(nb_2,sk_2))                     
+Abbreviations:
+sk_2 = sk[nb = nb_2,!1 = @sid]
+
+Derivation:
+Abbreviations:
+sk_2 = sk[nb = nb_2,!1 = @sid]
+
+1. We assume as hypothesis that
+attacker(nb_2).
+
+2. The message nb_2 that the attacker may have by 1 may be received at input {2}.
+So event endA(nb_2,sk_2) may be executed at {7}.
+event(endA(nb_2,sk_2)).
+
+3. By 2, event(endA(nb_2,sk_2)).
+The goal is reached, represented in the following fact:
+event(endA(nb_2,sk_2)).
+
+
+A more detailed output of the traces is available with
+  set traceDisplay = long.
+
+in(c, a) at {2} in copy a_1
+
+new sk: sessionkey creating sk_3 at {3} in copy a_1
+
+event beginA(a,sk_3) at {4} in copy a_1
+
+out(c, ~M) with ~M = senc(pair(a,sk_3),k) at {6} in copy a_1
+
+event endA(a,sk_3) at {7} in copy a_1 (goal)
+
+The event endA(a,sk_3) is executed at {7} in copy a_1.
+A trace has been found.
+RESULT event(endA(nb_2,sk_2)) ==> event(beginB(nb_2)) is false.
+
+--------------------------------------------------------------
+Verification summary:
+
+Query not attacker(sk[nb = v,!1 = v_1]) is true.
+
+Query event(endB(nb_2,sk_2)) ==> event(beginA(nb_2,sk_2)) is true.
+
+Query event(endA(nb_2,sk_2)) ==> event(beginB(nb_2)) is false.
+
+--------------------------------------------------------------
+*)
+
+(*
+你刚刚运行的 ProVerif 验证显示如下三个查询的结果：
+
+---
+
+## ✅ 查询 1：密钥保密性
+
+```
+Query not attacker(sk[nb = v,!1 = v_1]) is true.
+```
+
+### ✅ 解读：
+
+攻击者**无法获得会话密钥 `sk`**，即 `sk` 是机密的。
+
+说明加密机制正确，密钥 `sk` 是由 A 通过 `new sk` 生成，并用共享密钥 `k` 加密后发送，攻击者无法解密，保密性成立。
+
+---
+
+## ✅ 查询 2：A → B 的认证性
+
+```
+Query event(endB(nb_2,sk_2)) ==> event(beginA(nb_2,sk_2)) is true.
+```
+
+### ✅ 解读：
+
+只要 B 执行了 `endB(nb, sk)`，那么必然之前有 A 执行了 `beginA(nb, sk)`。
+
+说明 B 只会在 A 正确响应挑战后才接受 `sk`，**A 的身份得到了 B 的确认**。
+
+这是正向认证成立的典型标志，说明攻击者不能伪造 A 给 B 发消息。
+
+---
+
+## ❌ 查询 3：B → A 的认证性（失败）
+
+```
+Query event(endA(nb_2,sk_2)) ==> event(beginB(nb_2)) is false.
+```
+
+### ❌ 解读：
+
+A 执行了 `endA(nb, sk)` 并不一定意味着这个 `nb` 是 B 生成的，攻击者可能伪造了挑战 `nb`，诱骗 A 使用它。
+
+ProVerif 发现了如下攻击路径：
+
+1. 假设：`attacker(nb_2)`，即攻击者控制 `nb_2`；
+2. 攻击者通过信道 `c` 把 `nb_2` 作为挑战发给 A；
+3. A 接收后生成 `sk_2`，执行 `endA(nb_2, sk_2)`；
+4. 此时并没有任何 `beginB(nb_2)` 对应这个挑战；
+5. 结论：**A 被攻击者诱导产生会话密钥并错误地信任对方是 B**。
+
+---
+
+## 🔥 问题本质：A 没有认证挑战是由 B 发出的
+
+这是经典的中间人攻击（MITM）情景：
+
+* 攻击者假装是 B，给 A 发送伪造的 `nb`；
+* A 回应并执行 `endA(nb, sk)`；
+* 实际上 B 并没有参与这个会话。
+
+---
+
+## 🛡️ 修复建议：**加入身份绑定或签名机制**
+
+要让 A 确认挑战确实来自 B，可以采用以下机制之一：
+
+| 方式                         | 原理                            |
+| -------------------------- | ----------------------------- |
+| **将 B 的身份一起加密绑定在挑战中**      | 例如 `pair(nb, B_ID)`，使 A 可确认 B |
+| **用非对称加密或签名**              | 让 B 签名 `nb`，A 验签              |
+| **A 发出 challenge，B 回应带挑战** | 变为双向 challenge-response（更安全）  |
+
+---
+
+## ✅ 结论
+
+| 查询       | 是否成立  | 含义               |
+| -------- | ----- | ---------------- |
+| 密钥保密性    | ✅ 成立  | sk 不被攻击者获取       |
+| A → B 认证 | ✅ 成立  | B 只接受 A 的响应      |
+| B → A 认证 | ❌ 不成立 | 攻击者可冒充 B 发挑战骗过 A |
+
+---
+
+如果你想让我继续帮助你修复这一认证漏洞，比如：
+
+* 使用 **数字签名** 或
+* 改为 A 发挑战、B 回应（challenge-response swap）
+
+我可以为你重新建模。是否继续？
+*)

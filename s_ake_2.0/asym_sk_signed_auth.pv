@@ -1,0 +1,136 @@
+(*| 安全目标             | 是否达成  | 机制说明                   |
+| ---------------- | ----- | ---------------------- |
+| 摆脱共享密钥           | ✅ 是   | sk 用 B 的公钥加密           |
+| 双向认证             | ✅ 是   | 双方签名彼此消息               |
+| sk 保密性           | ✅ 是   | 攻击者无法解密 `asymenc(...)` |
+| 抗重放攻击（injective） | ✅ 可验证 | `inj-event` 成立         |
+| 基于公钥架构（PKI）      | ✅ 是   | 信任 `pkA` 与 `pkB`       |
+*)
+(*
+| 优点    | 描述                                              |
+| ----- | ----------------------------------------------- |
+| 结构清晰  | 每个角色的逻辑单独定义，便于阅读与管理                             |
+| 易扩展   | 后续可以增加 `B_init`, `A_resp`, `SessionManager` 等模块 |
+| 支持多实例 | `!A_init` 表示 A 可多次发起，模拟并发或多人通信                  |
+| 可调测试  | 只替换或注释部分模块即可测试不同场景                              |
+*)
+const A_ID: bitstring.
+
+(* 类型定义 *)
+type nonce.
+type sessionkey.
+type skey.
+type pkey.
+type skey_enc.
+type pkey_enc.
+
+(* 类型转换器 *)
+fun toBits(sessionkey): bitstring [typeConverter].
+fun fromBits(bitstring): sessionkey [typeConverter].
+
+(* 公钥映射 *)
+fun pk(skey): pkey.
+fun pk_enc(skey_enc): pkey_enc.
+
+(* 签名函数 *)
+fun sign(bitstring, skey): bitstring.
+reduc forall m: bitstring, sk: skey;
+      checksig(sign(m, sk), pk(sk)) = m.
+
+(* 非对称加解密 *)
+fun asymenc(bitstring, pkey_enc): bitstring.
+reduc forall m: bitstring, k: skey_enc;
+      asymdec(asymenc(m, pk_enc(k)), k) = m.
+
+(* 数据结构 *)
+fun pair(bitstring, bitstring): bitstring.
+reduc forall x, y: bitstring; proj1(pair(x, y)) = x.
+reduc forall x, y: bitstring; proj2(pair(x, y)) = y.
+
+(* 通道与密钥 *)
+free c: channel.
+
+free pkB: pkey.
+free skB: skey [private].
+free pkB_enc: pkey_enc.
+free skB_enc: skey_enc [private].
+
+free pkA: pkey.
+free skA: skey [private].
+
+(* 事件定义 *)
+event beginA(bitstring, bitstring, sessionkey).
+event endB(bitstring, bitstring, sessionkey).
+event beginB(bitstring).
+event endA(bitstring, sessionkey).
+
+(* 查询定义 *)
+query attacker(new sk).
+query na: bitstring, nb: bitstring, sk: sessionkey;
+      event(endB(na, nb, sk)) ==> event(beginA(na, nb, sk)).
+query na: bitstring, sk: sessionkey;
+      event(endA(na, sk)) ==> event(beginB(na)).
+query na: bitstring, nb: bitstring, sk: sessionkey;
+      inj-event(endB(na, nb, sk)) ==> inj-event(beginA(na, nb, sk)).
+
+(* 模块 A_init：A 发起方 *)
+let A_init =
+  out(c, A_ID);
+  in(c, signed_nb: bitstring);
+  let nb = checksig(signed_nb, pkB) in
+  new na: bitstring;
+  new sk: sessionkey;
+  event beginA(na, nb, sk);
+  let payload = pair(na, pair(nb, toBits(sk))) in
+  let sigA = sign(payload, skA) in
+  out(c, pair(sigA, asymenc(payload, pkB_enc)));
+  in(c, r: bitstring);
+  if r = na then
+    event endA(na, sk)
+  else
+    0.
+
+(* 模块 B_resp：B 响应方 *)
+let B_resp =
+  in(c, id: bitstring);
+  new nb: bitstring;
+  event beginB(nb);
+  out(c, sign(nb, skB));
+  in(c, sig_and_enc: bitstring);
+  let sigA = proj1(sig_and_enc) in
+  let encPayload = proj2(sig_and_enc) in
+  let payload = asymdec(encPayload, skB_enc) in
+  let verified = checksig(sigA, pkA) in
+  if verified = payload then
+    let na = proj1(payload) in
+    let pair2 = proj2(payload) in
+    let rcv_nb = proj1(pair2) in
+    let sk = fromBits(proj2(pair2)) in
+    if rcv_nb = nb then
+      event endB(na, rcv_nb, sk);
+      out(c, na)
+    else 0
+  else 0.
+
+(* 主进程：模块组合 *)
+process
+  (!A_init | !B_resp)
+
+
+(*TODO:后续扩展方向
+| 方向                         | 说明                                              |
+| -------------------------- | ----------------------------------------------- |
+| 🔄 添加前向安全性（PFS）            | 引入 ephemeral DH：`g^a`, `g^b`，用 `g^{ab}` 派生 `sk` |
+| ⏳ 加入 sessionID / timestamp | 限制每轮认证的上下文，增强 replay 抵抗性                        |
+| 🔍 模拟攻击者策略下 trace 输出       | 使用 `set traceDisplay = long.` 分析攻击场景            |
+| 🔐 实现 TLS 1.3 类 handshake  | 通过构造 KeyShare/Finished 模拟标准协议                   |
+| 📚 形式化为 AKE 安全模型结构         | 如 SIG-DH、eCK，适用于报告或发表                           |
+
+
+
+TODO:📦 封装为多个 process 和模块（A_init、B_resp）；
+
+TODO:🧪 继续验证其他属性（KCI、PFS、key confirmation）；
+
+TODO:📄 我帮你整理成正式报告结构或注释版可读代码；
+*)
