@@ -1,0 +1,157 @@
+const A_ID: bitstring.  (* A 的身份常量 *)
+
+(* === 类型定义 === *)
+type exp.                  (* DH 指数类型（私钥） *)
+type group.                (* 群元素类型（如 g^x） *)
+type sessionkey.           (* 会话密钥类型 *)
+type skey.                 (* 签名私钥类型 *)
+type pkey.                 (* 签名公钥类型 *)
+type skey_enc.             (* 非对称加密私钥类型 *)
+type pkey_enc.             (* 非对称加密公钥类型 *)
+
+(* === 群生成元 === *)
+free g: group.  (* DH 协议中的公开生成元 *)
+
+(* === 通用封装器 === *)
+fun encode_group(group): bitstring.  (* 群元素编码为比特串 *)
+
+(* === 公钥函数 === *)
+fun pk(skey): pkey.                 (* 从签名私钥得到签名公钥 *)
+fun pk_enc(skey_enc): pkey_enc.     (* 从加密私钥得到加密公钥 *)
+
+(* === 签名函数 === *)
+fun sign(bitstring, skey): bitstring.
+fun checksig(bitstring, pkey): bitstring.
+equation forall m: bitstring, sk: skey;
+  checksig(sign(m, sk), pk(sk)) = m.
+
+(* === 非对称加解密函数 === *)
+fun asymenc(bitstring, pkey_enc): bitstring.
+fun asymdec(bitstring, skey_enc): bitstring.
+equation forall m: bitstring, k: skey_enc;
+  asymdec(asymenc(m, pk_enc(k)), k) = m.
+
+(* === DH 密钥协商函数 === *)
+fun g_exp(group, exp): group.               (* 幂运算：g^x *)
+fun mult(group, group): group.              (* 群元素乘法 *)
+fun h(group): sessionkey.                   (* 哈希导出会话密钥 *)
+fun exp_add(exp, exp): exp.                 (* 定义指数加法 *)
+equation forall G: group,x: exp, y: exp;
+  mult(g_exp(G, x), g_exp(G, y)) = g_exp(G, exp_add(x, y)).
+
+(* === 构造器与解构器 === *)
+fun pair(bitstring, bitstring): bitstring.
+fun proj1(bitstring): bitstring.
+fun proj2(bitstring): bitstring.
+equation forall x: bitstring, y: bitstring;
+  proj1(pair(x,y)) = x.
+equation forall x: bitstring, y: bitstring;
+  proj2(pair(x,y)) = y.
+
+(* === 通道定义 === *)
+free c: channel.  (* 公共通信信道 *)
+
+(* === A 与 B 的密钥定义 === *)
+free pkB: pkey.
+free skB: skey [private].
+free pkB_enc: pkey_enc.
+free skB_enc: skey_enc [private].
+
+free pkA: pkey.
+free skA: skey [private].
+
+(* === 事件定义 === *)
+event beginA(bitstring, bitstring, sessionkey).
+event endB(bitstring, bitstring, sessionkey).
+event beginB(bitstring).
+event endA(bitstring, sessionkey).
+
+
+(* === 查询定义 === *)
+query x: sessionkey; attacker(x).
+
+(* A <- B 认证查询 *)
+query na: bitstring, nb: bitstring, sk: sessionkey;
+      event(endB(na, nb, sk)) ==> event(beginA(na, nb, sk)).
+
+(* B <- A 认证查询 *)
+query na: bitstring, nb: bitstring, sk: sessionkey;
+      event(endA(na, sk)) ==> event(endB(na, nb, sk)).
+
+(* 会话密钥一致性查询 *)
+query na: bitstring, nb: bitstring, sk: sessionkey;
+      event(endA(na, sk)) ==> event(endB(na, nb, sk)).
+
+(* === A 的过程 === *)
+let A =
+  new a: exp;
+  let A_pub = g_exp(g, a) in
+  let sigA = sign(encode_group(A_pub), skA) in
+
+  out(c, A_ID);       (* 发送 A 的身份 *)
+  out(c, sigA);       (* 发送签名 *)
+  out(c, A_pub);      (* 发送公钥 *)
+
+  in(c, B_pub: group);  (* 接收 B 的公钥 *)
+  let shared = h(mult(B_pub, A_pub)) in
+  event beginA(A_ID, encode_group(B_pub), shared);
+  event endA(encode_group(A_pub), shared).
+
+(* === B 的过程 === *)
+let B =
+  new b: exp;
+  let B_pub = g_exp(g, b) in
+
+  in(c, id: bitstring);
+  in(c, sigA: bitstring);
+  in(c, A_pub: group);
+
+  let verified = checksig(sigA, pkA) in
+  if verified = encode_group(A_pub) then
+    let shared = h(mult(A_pub, B_pub)) in
+    event beginB(encode_group(A_pub));
+    out(c, B_pub);
+    event endB(encode_group(A_pub), encode_group(B_pub), shared)
+  else
+    0.
+
+(* === 主进程：并发运行多个 A 与 B 实例 === *)
+process
+  (!A) | (!B)
+
+
+
+
+(*✅ 下一步建议
+如果你计划进一步验证以下安全属性，我可以继续帮助你建模：
+
+安全目标	对应扩展方式
+KCI 抗性	模拟密钥泄露 attacker(skA)
+前向保密（PFS）	使用 new 会话密钥、无长期密钥导出
+完整 Key Confirmation	双向 begin/end 事件 + implication 查询
+主动攻击（MITM）模型化	引入 attacker 控制部分信道
+
+是如你后续希望加入：
+
+KCI 抗性建模（Key Compromise Impersonation）；
+
+前向保密（Forward Secrecy）；
+
+双向 Key Confirmation；
+
+主动攻击建模（如中间人攻击）；
+
+--- 什么是具备等价推理语义
+--- 什么是自动还原签名消息
+--- 什么是认证属性（验证）
+*)
+
+(*
+      equation 语句适用于“构造器-解构器”之间存在确定性等式的情况；
+
+相较于 reduc，equation 更适合加密、签名、哈希等函数的建模；
+
+reduc 通常用于带归约规则的破坏者分析（如异或、同态等），或者构造器自动推理；
+
+
+*)

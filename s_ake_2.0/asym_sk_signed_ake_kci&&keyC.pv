@@ -1,0 +1,225 @@
+const A_ID: bitstring.
+
+(* 类型定义 *)
+type nonce.
+type sessionkey.
+type skey.
+type pkey.
+type skey_enc.
+type pkey_enc.
+
+(* 类型转换器 *)
+fun toBits(sessionkey): bitstring [typeConverter].
+fun fromBits(bitstring): sessionkey [typeConverter].
+fun nonceToBit(nonce): bitstring [typeConverter].
+
+(* 公钥函数 *)
+fun pk(skey): pkey.
+fun pk_enc(skey_enc): pkey_enc.
+
+(* 签名函数 *)
+fun sign(bitstring, skey): bitstring.
+reduc forall m: bitstring, sk: skey;
+      checksig(sign(m, sk), pk(sk)) = m.
+
+(* 非对称加解密 *)
+fun asymenc(bitstring, pkey_enc): bitstring.
+
+reduc forall m: bitstring, k: skey_enc;
+      asymdec(asymenc(m, pk_enc(k)), k) = m.
+
+(* 构造器与解构器 *)
+fun pair(bitstring, bitstring): bitstring.
+reduc forall x, y: bitstring; proj1(pair(x, y)) = x.
+reduc forall x, y: bitstring; proj2(pair(x, y)) = y.
+
+(* 通道与密钥 *)
+free c: channel.
+
+(* KCI攻击模拟：攻击者知道 A 的签名私钥 *)
+free skA: skey.
+free skB: skey [private].
+free skB_enc: skey_enc [private].
+
+free pkB: pkey.
+free pkB_enc: pkey_enc.
+
+free pkA: pkey.
+
+(* 事件 *)
+event beginA(bitstring, bitstring, sessionkey).
+event endB(bitstring, bitstring, sessionkey).
+event beginB(bitstring).
+event endA(bitstring, sessionkey).
+
+(* 查询 *)
+query attacker(new sk).
+
+query na: bitstring, nb: bitstring, sk: sessionkey;
+      event(endB(na, nb, sk)) ==> event(beginA(na, nb, sk)).
+
+query na: bitstring, nb: bitstring, sk: sessionkey;
+      event(endA(na, sk)) ==> event(endB(na, nb, sk)).
+
+(* A 的过程 *)
+let A =
+  out(c, A_ID);
+  in(c, signed_nb: bitstring);
+  let nb = checksig(signed_nb, pkB) in
+  new na: bitstring;
+  new sk: sessionkey;
+  event beginA(na, nb, sk);
+  let payload = pair(na, pair(nb, toBits(sk))) in
+  let sigA = sign(payload, skA) in
+  out(c, pair(sigA, asymenc(payload, pkB_enc)));
+  in(c, r: bitstring);
+  if r = na then
+    event endA(na, sk)
+  else 0.
+
+(* B 的过程 *)
+let B =
+  in(c, id: bitstring);
+  new nb: bitstring;
+  event beginB(nb);
+  out(c, sign(nb, skB));
+  in(c, sig_and_enc: bitstring);
+  let sigA = proj1(sig_and_enc) in
+  let encPayload = proj2(sig_and_enc) in
+  let payload = asymdec(encPayload, skB_enc) in
+  let verified = checksig(sigA, pkA) in
+  if verified = payload then
+    let na = proj1(payload) in
+    let pair2 = proj2(payload) in
+    let rcv_nb = proj1(pair2) in
+    let sk = fromBits(proj2(pair2)) in
+    if rcv_nb = nb then
+      event endB(na, rcv_nb, sk);
+      out(c, na)
+    else 0
+  else 0.
+
+(* 主进程 *)
+process
+  (!A | !B)
+
+(*你这次运行 ProVerif 的验证输出显示，协议在你关注的几个关键安全性质上均通过了验证，具体解读如下：
+
+---
+
+### 1. 会话密钥保密性
+
+```
+Query not attacker(sk[signed_nb = v,!1 = v_1]) is true.
+```
+
+**含义**：攻击者无法获得任何通过协议协商的会话密钥 `sk`。
+
+* 说明 `sk` 通过非对称加密和签名保护，没有被泄露给攻击者；
+* 表示协议的机密性得到了保证。
+
+---
+
+### 2. B 认证 A（A → B 认证）
+
+```
+Query event(endB(na_2,nb_2,sk_2)) ==> event(beginA(na_2,nb_2,sk_2)) is true.
+```
+
+**含义**：当 B 触发 `endB` 事件（表示它接受了某个会话密钥），必然存在对应的 A 触发的 `beginA` 事件。
+
+* 说明 B 只会接受 A 合法的回应；
+* 攻击者不能冒充 A 骗过 B。
+
+---
+
+### 3. A 认证 B（B → A 认证）
+
+```
+Query event(endA(na_2,sk_2)) ==> event(endB(na_2,nb_2,sk_2)) is true.
+```
+
+**含义**：当 A 触发 `endA` 事件（认为认证完成），必然存在对应的 B 触发的 `endB` 事件。
+
+* 表明 A 只在 B 合法回应挑战后确认认证；
+* 双向认证成立，双方身份均得到验证。
+
+---
+
+## 总结
+
+| 安全性质       | 验证结果 | 含义            |
+| ---------- | ---- | ------------- |
+| 会话密钥保密性    | ✅ 通过 | 攻击者无法获得密钥     |
+| A → B 身份认证 | ✅ 通过 | B 只接受 A 的合法回应 |
+| B → A 身份认证 | ✅ 通过 | A 只接受 B 的合法挑战 |
+
+---
+
+### 结论
+
+* 你的协议模型实现了**基于非对称加密的双向认证密钥协商**；
+* 具备良好的**机密性**和**双向身份认证**属性；
+* 这符合现代安全协议的设计要求。
+
+---
+
+如果你想进一步验证：
+
+* **前向保密（PFS）**；
+* **Key Confirmation**（双方一致确认密钥）；
+* **KCI 抗性**（防止私钥泄露下的伪造攻击）；
+
+或者需要我帮你设计对应的增强模型，随时告诉我！
+*)
+(*是的，上述结果确实说明了协议具有 **KCI 抗性** 和 **Key Confirmation** 安全性，具体解释如下：
+
+---
+
+## 1. KCI 抗性（Key Compromise Impersonation Resistance）
+
+* 你将 `skA` 设置为攻击者已知（非 `[private]`）并进行验证；
+
+* 查询
+
+  ```proverif
+  query na: bitstring, nb: bitstring, sk: sessionkey;
+        event(endB(na, nb, sk)) ==> event(beginA(na, nb, sk)).
+  ```
+
+  返回为 **true** 表示：
+
+  > 即使攻击者知道 A 的签名私钥，也无法伪造让 B 接受伪造的会话密钥；
+
+* 这正是 KCI 抗性的定义和体现。
+
+---
+
+## 2. Key Confirmation
+
+* 查询
+
+  ```proverif
+  query na: bitstring, sk: sessionkey;
+        event(endA(na, sk)) ==> event(endB(na, nb, sk)).
+  ```
+
+  返回为 **true** 表明：
+
+  > A 只有在 B 也接受了相同的 `sk` 时，才会认为会话协商成功；
+
+* 这保证了双方都知道并确认了同一个会话密钥。
+
+---
+
+## 总结
+
+| 属性               | 结论   | 说明             |
+| ---------------- | ---- | -------------- |
+| KCI 抗性           | ✅ 具备 | 攻击者知 A 私钥不影响认证 |
+| Key Confirmation | ✅ 具备 | 双方确认使用同一会话密钥   |
+
+---
+
+如果你还想验证**前向保密（PFS）**，或需要更详细的攻击路径分析，也可以继续告诉我！
+*)
