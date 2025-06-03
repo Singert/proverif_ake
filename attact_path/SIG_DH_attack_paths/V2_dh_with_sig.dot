@@ -1,0 +1,20 @@
+
+    digraph V2_Leak {
+        rankdir=LR;
+        node [shape=ellipse];
+
+        A_pub [label="g^a"];
+        B_pub [label="g^b"];
+        Mult [label="mult(g^a, g^b)"];
+        Hash [label="h(g^{ab})"];
+        Attacker [label="attacker
+可知g^a, g^b"];
+
+        A_pub -> Mult;
+        B_pub -> Mult;
+        Mult -> Hash;
+        Attacker -> A_pub;
+        Attacker -> B_pub;
+        Hash -> Attacker [style=dashed,label="⇒ attacker(sk)"];
+    }
+    

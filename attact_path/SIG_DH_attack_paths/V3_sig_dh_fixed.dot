@@ -1,0 +1,15 @@
+
+    digraph V3_Fixed {
+        rankdir=LR;
+        node [shape=box];
+
+        B_encrypt [label="B用pkA加密(B_pub, sigB, sk)"];
+        A_decrypt [label="A用skA解密，验证sigB"];
+        Shared [label="h(g^ab)推导出sk"];
+        Attacker [label="attacker
+无法解密但仍能重现g^a, g^b"];
+
+        B_encrypt -> A_decrypt -> Shared;
+        Attacker -> Shared [style=dashed,label="⇒ h(g^ab)"];
+    }
+    

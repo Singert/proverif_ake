@@ -1,0 +1,199 @@
+(*启用攻击路径输出*)
+set traceDisplay = long.
+
+(* === A 的身份常量 === *)
+const A_ID: bitstring.
+
+(* === 类型定义 === *)
+type exp.                  (* DH 指数类型（私钥） *)
+type group.                (* 群元素类型（如 g^x） *)
+type sessionkey.           (* 会话密钥类型 *)
+type skey.                 (* 签名私钥类型 *)
+type pkey.                 (* 签名公钥类型 *)
+type skey_enc.             (* 非对称加密私钥类型 *)
+type pkey_enc.             (* 非对称加密公钥类型 *)
+
+(* === 群生成元 === *)
+free g: group.  (* 公共生成元 *)
+
+(* === 编码函数 === *)
+fun encode_group(group): bitstring.
+
+(* === 公钥函数 === *)
+fun pk(skey): pkey.
+fun pk_enc(skey_enc): pkey_enc.
+
+(* === 签名函数与验证 === *)
+fun sign(bitstring, skey): bitstring.
+fun checksig(bitstring, pkey): bitstring.
+equation forall m: bitstring, sk: skey;
+  checksig(sign(m, sk), pk(sk)) = m.
+
+(* === 加解密函数 === *)
+fun asymenc(bitstring, pkey_enc): bitstring.
+fun asymdec(bitstring, skey_enc): bitstring.
+equation forall m: bitstring, k: skey_enc;
+  asymdec(asymenc(m, pk_enc(k)), k) = m.
+
+(* === Diffie-Hellman 相关函数 === *)
+fun g_exp(group, exp): group.
+fun mult(group, group): group.
+fun h(group): sessionkey.
+fun exp_add(exp, exp): exp.
+equation forall G: group, x: exp, y: exp;
+  mult(g_exp(G, x), g_exp(G, y)) = g_exp(G, exp_add(x, y)).
+
+(* === 构造器与解构器 === *)
+fun pair(bitstring, bitstring): bitstring.
+fun proj1(bitstring): bitstring.
+fun proj2(bitstring): bitstring.
+equation forall x: bitstring, y: bitstring;
+  proj1(pair(x, y)) = x.
+equation forall x: bitstring, y: bitstring;
+  proj2(pair(x, y)) = y.
+
+(* === 通信信道 === *)
+free c: channel.
+
+(* === A/B 的密钥定义 === *)
+free pkA: pkey.
+free skA: skey [private].
+free pkB: pkey.
+free skB: skey [private].
+free pkB_enc: pkey_enc.
+free skB_enc: skey_enc [private].
+
+(* === 事件定义 === *)
+event beginA(bitstring, bitstring, sessionkey).      (* A 发起协议：自己的身份、对方身份、公钥派生密钥 *)
+event endA(bitstring, sessionkey).                   (* A 结束：记录对方身份与密钥 *)
+
+event beginB(bitstring).                             (* B 开始接收 A 的公钥 *)
+event endB(bitstring, bitstring, sessionkey).        (* B 结束：记录 A 身份、B 身份、密钥 *)
+
+(* === 查询定义 === *)
+
+(* 1. 保密性：攻击者是否能得到会话密钥 *)
+query x: sessionkey; attacker(x).
+
+(* 2. B <- A 的认证性：若 B 认为协商完成（endB），则一定有 A 发起了 beginA *)
+query idA: bitstring, idB: bitstring, sk: sessionkey;
+  event(endB(idA, idB, sk)) ==> event(beginA(idA, idB, sk)).
+
+(* 3. 会话密钥一致性：若 A 完成密钥协商，则 B 也协商出了相同密钥 *)
+query a_id: bitstring, b_id: bitstring, sk: sessionkey;
+  event(endA(b_id, sk)) ==> event(endB(a_id, b_id, sk)).
+
+
+(* === 新增 B 签名机制（修复版） === *)
+
+(* A 的过程 *)
+let A =
+  new a: exp;
+  let A_pub = g_exp(g, a) in
+  let sigA = sign(encode_group(A_pub), skA) in
+
+  out(c, A_ID);
+  out(c, sigA);
+  out(c, A_pub);
+
+  in(c, B_pub: group);
+  in(c, sigB: bitstring);
+
+  let verifiedB = checksig(sigB, pkB) in
+  if verifiedB = encode_group(B_pub) then
+    let shared = h(mult(B_pub, A_pub)) in
+    event beginA(A_ID, encode_group(B_pub), shared);
+    event endA(encode_group(B_pub), shared)
+  else 0.
+
+(* B 的过程 *)
+let B =
+  new b: exp;
+  let B_pub = g_exp(g, b) in
+  let sigB = sign(encode_group(B_pub), skB) in
+
+  in(c, id: bitstring);
+  in(c, sigA: bitstring);
+  in(c, A_pub: group);
+
+  let verified = checksig(sigA, pkA) in
+  if verified = encode_group(A_pub) then
+    let shared = h(mult(A_pub, B_pub)) in
+    event beginB(encode_group(A_pub));
+    out(c, B_pub);
+    out(c, sigB);
+    event endB(id, encode_group(B_pub), shared)
+  else 0.
+
+
+(* === 主进程 === *)
+process
+  (!A) | (!B)
+
+(*
+你这次运行的是带有签名认证的 修复版本 SIG_DH/dh_with_sig.pv，从输出结果来看：
+
+✅ 验证结果总结
+查询内容	结果	含义
+query not attacker(x)	❌ false	攻击者可能知晓某个密钥（详见下）
+endB(idA,idB,sk) ==> beginA(idA,idB,sk)	✅ true	B 的认证成功（B 只接受 A 发起的会话）
+endA(b_id,sk) ==> endB(a_id,b_id,sk)	✅ true	A 与 B 的密钥一致性得到保证
+
+🧠 解读重点：认证成功，但保密性失败
+这是最关键的发现 —— 你修复了认证性问题，但 not attacker(x) 仍为 false，说明攻击者仍然能得到某个密钥！
+
+🔍 分析可能原因：
+你的 sessionkey 是这样生成的：
+
+proverif
+复制
+编辑
+let shared = h(mult(B_pub, A_pub))
+而 attacker 可知：
+
+A 的 g^a（即 A_pub）是广播出去的；
+
+B 的 g^b（即 B_pub）虽然带签名，但攻击者能看到 其值（虽然无法伪造）；
+
+mult(...) 是公开函数；
+
+h(...) 也是公开函数。
+
+所以 虽然攻击者不能伪造签名，也不能“假冒 B”，但他们能看到 g^a, g^b，于是能算出 h(g^{ab})，这导致 保密性仍然失败。
+
+✅ 解决方式：加入 DH 私钥保护（例如 ECIES 风格）
+✅ 方法一：将 shared 用 hash(secret) 而不是 hash(public) 表示
+例如：
+
+proverif
+复制
+编辑
+let shared = h(secret_dh_value)
+但在 ProVerif 中，g^ab 是可以被还原的，所以最好用：
+
+✅ 方法二：在 shared 生成后立刻加密使用（现实中常做）
+也可以用 h(a || b || g^{ab}) 加大攻击者还原难度。
+
+✅ 课堂展示建议
+你现在拥有的完整闭环非常有价值，可以如下安排你的展示结构：
+
+环节	内容	演示方式
+✅ 协议建模	A, B 签名机制建模完整	展示 ProVerif 代码
+❌ 原始版本失败	中间人插入 B_pub → 验证失败	演示攻击轨迹截图
+✅ 修复版本成功认证	加入 sigB 后认证成功	展示 ProVerif 输出
+⚠️ 仍有保密性问题	attacker 仍能还原 g^{ab}	强调“形式上认证 vs 实际上保密”对比
+✅ 提出改进方向	建议使用 PFS、KDF、加密共享密钥	提出 ECIES 式设计启发
+
+✅ 是否需要我继续帮助你？
+你可以继续提出：
+
+帮我画“修复前 vs 修复后”的对比图
+
+请写出该闭环的 PPT 演示结构或幻灯片草稿
+
+请给我一个真实可保密的改进建模版本（如改为 encrypt(g^ab)）
+
+我可以立即为你生成这些材料。是否继续？
+
+
+*)

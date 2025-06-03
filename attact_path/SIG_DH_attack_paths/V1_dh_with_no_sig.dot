@@ -1,0 +1,16 @@
+
+    digraph V1_Attack {
+        rankdir=LR;
+        node [shape=box];
+
+        Attacker [label="Attacker
+拥有g, pkA, pkB"];
+        Fake_B_pub [label="构造伪造B_pub"];
+        Send_to_A [label="发送B_pub给A"];
+        A_endA [label="A执行endA"];
+
+        Attacker -> Fake_B_pub;
+        Fake_B_pub -> Send_to_A;
+        Send_to_A -> A_endA;
+    }
+    

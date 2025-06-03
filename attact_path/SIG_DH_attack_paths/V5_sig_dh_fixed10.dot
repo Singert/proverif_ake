@@ -1,0 +1,18 @@
+
+    digraph V5_Secure {
+        rankdir=LR;
+        node [shape=box];
+
+        A_pub [label="g^a"];
+        B_pub [label="g^b"];
+        Hash [label="h(A_ID || B_ID || g^{ab})"];
+        Attacker [label="attacker
+可见g^a, g^b"];
+
+        A_pub -> Hash;
+        B_pub -> Hash;
+        Attacker -> A_pub;
+        Attacker -> B_pub;
+        Hash -> Attacker [style=dashed, label="绑定身份 ⇒ 无法伪造"];
+    }
+    

@@ -1,0 +1,22 @@
+
+    digraph V6_FullSecure {
+        rankdir=LR;
+        node [shape=box];
+
+        sid_A [label="sid_A"];
+        sid_B [label="sid_B"];
+        MsgA [label="pair(g^a, A_ID, sid_A)"];
+        MsgB [label="pair(g^b, B_ID, sid_B)"];
+        Hash [label="h(sid || A_ID || B_ID || g^{ab})"];
+        SigA [label="sign(MsgA)"];
+        SigB [label="sign(MsgB)"];
+        Attacker [label="attacker
+无sid上下文"];
+
+        sid_A -> MsgA -> SigA;
+        sid_B -> MsgB -> SigB;
+        MsgA -> Hash;
+        MsgB -> Hash;
+        Hash -> Attacker [style=dashed, label="无法重放或伪造"];
+    }
+    

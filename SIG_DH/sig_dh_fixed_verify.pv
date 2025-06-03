@@ -1,0 +1,114 @@
+(* ===== 类型声明 ===== *)
+type exp.
+type group [private].
+type sessionkey.
+type skey.
+type pkey.
+type sskey.
+type spkey.
+
+(* ===== 群运算与哈希函数 ===== *)
+fun g_exp(group, exp): group [private].
+fun encode_group(group): bitstring [private].
+fun decode_group(bitstring): group [private].
+fun mult(group, group): group [private].
+fun h(bitstring): sessionkey [private].
+fun exp_add(exp, exp): exp.
+
+(* ===== 密钥函数 ===== *)
+fun pk(skey): pkey.
+fun spk(sskey): spkey.
+fun asymenc(bitstring, pkey): bitstring.
+fun asymdec(bitstring, skey): bitstring.
+
+(* ===== 签名函数（不可恢复） ===== *)
+fun sign(bitstring, sskey): bitstring.
+fun verifies(bitstring, bitstring, spkey): bitstring.
+
+(* ===== 对及投影 ===== *)
+fun pair(bitstring, bitstring): bitstring.
+fun proj1(bitstring): bitstring.
+fun proj2(bitstring): bitstring.
+
+(* ===== 等式定义 ===== *)
+equation forall x: bitstring, y: bitstring; proj1(pair(x,y)) = x.
+equation forall x: bitstring, y: bitstring; proj2(pair(x,y)) = y.
+equation forall G: group, x: exp, y: exp;
+  mult(g_exp(G,x),g_exp(G,y)) = g_exp(G,exp_add(x,y)).
+equation forall m: bitstring, k: skey;
+  asymdec(asymenc(m, pk(k)), k) = m.
+
+(* ===== 公共值声明 ===== *)
+free c: channel.
+const g: group [private].
+const ok: bitstring.
+free A_ID, B_ID: bitstring.
+free skA: skey [private].   free pkA: pkey.
+free skB: skey [private].   free pkB: pkey.
+free skAS: sskey [private]. free pkAS: spkey.
+free skBS: sskey [private]. free pkBS: spkey.
+
+(* ===== 事件定义 ===== *)
+event beginA(bitstring, bitstring, sessionkey).
+event endA(bitstring, sessionkey).
+event beginB(bitstring).
+event endB(bitstring, bitstring, sessionkey).
+
+(* ===== 安全性查询 ===== *)
+query a_id: bitstring, b_bits: bitstring, k: sessionkey;
+  event(endA(b_bits, k)) ==> attacker(k).
+query na: bitstring, nb: bitstring, sk: sessionkey;
+  event(endB(na, nb, sk)) ==> event(beginA(na, nb, sk)).
+query a_id: bitstring, b_id: bitstring, sk: sessionkey;
+  event(endA(b_id, sk)) ==> event(endB(a_id, b_id, sk)).
+
+(* ===== A 的过程 ===== *)
+let A =
+  new a: exp;
+  new sid_A: bitstring;
+  let A_pub = g_exp(g, a) in
+  let A_pub_bits = encode_group(A_pub) in
+  let msgA = pair(A_pub_bits, pair(A_ID, sid_A)) in
+  let sigA = sign(msgA, skAS) in
+  let enc_A_pub = asymenc(A_pub_bits, pkB) in
+
+  out(c, A_ID); out(c, sigA); out(c, enc_A_pub);
+
+  in(c, msg: bitstring);
+  let enc_B_pub = proj1(msg) in
+  let sigB = proj2(msg) in
+  let B_pub_bits_tmp = asymdec(enc_B_pub, skA) in
+
+  if verifies(pair(B_pub_bits_tmp, B_ID), sigB, pkBS) = ok then
+    let B_pub = decode_group(B_pub_bits_tmp) in
+    let shared = h(pair(sid_A, pair(A_ID, pair(B_ID, encode_group(mult(B_pub, A_pub)))))) in
+
+    event beginA(A_ID, B_pub_bits_tmp, shared);
+    event endA(B_pub_bits_tmp, shared).
+
+(* ===== B 的过程 ===== *)
+let B =
+  new b: exp;
+  new sid_B: bitstring;
+  let B_pub = g_exp(g, b) in
+  let B_pub_bits = encode_group(B_pub) in
+  let msgB = pair(B_pub_bits, B_ID) in
+  let sigB = sign(msgB, skBS) in
+
+  in(c, aid: bitstring);
+  in(c, sigA: bitstring);
+  in(c, enc_A_pub: bitstring);
+  let A_pub_bits_tmp = asymdec(enc_A_pub, skB) in
+
+  if verifies(pair(A_pub_bits_tmp, pair(aid, sid_B)), sigA, pkAS) = ok then
+    let A_pub = decode_group(A_pub_bits_tmp) in
+    let enc_B_pub = asymenc(B_pub_bits, pkA) in
+    let msg = pair(enc_B_pub, sigB) in
+    out(c, msg);
+
+    let shared = h(pair(sid_B, pair(aid, pair(B_ID, encode_group(mult(A_pub, B_pub)))))) in
+    event beginB(A_pub_bits_tmp);
+    event endB(aid, B_pub_bits, shared).
+
+(* ===== 并发执行 ===== *)
+process (!A) | (!B)

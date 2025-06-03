@@ -1,0 +1,16 @@
+
+    digraph V4_PairSig {
+        rankdir=LR;
+        node [shape=box];
+
+        A_enc_pub [label="A加密g^a为enc_A_pub"];
+        A_sign [label="A签名sigA"];
+        B_dec [label="B解密enc_A_pub, 验证sigA"];
+        Attacker [label="attacker
+重放enc_A_pub"];
+
+        A_enc_pub -> B_dec;
+        A_sign -> B_dec;
+        Attacker -> B_dec [style=dashed,label="replay or swap"];
+    }
+    
