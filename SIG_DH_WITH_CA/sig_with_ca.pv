@@ -1,0 +1,93 @@
+(* ===== 类型声明 ===== *)
+type exp.              (* 指数 *)
+type group.            (* 群元素 *)
+type sessionkey.       (* 会话密钥 *)
+type skey.             (* 私钥 *)
+type pkey.             (* 公钥 *)
+
+(* ===== 群运算与哈希函数 ===== *)
+fun g_exp(group, exp): group.
+fun mult(group, group): group.
+fun encode_group(group): bitstring.
+fun decode_group(bitstring): group.
+fun h(bitstring): sessionkey.
+
+(* ===== 签名相关函数 ===== *)
+fun pk(skey): pkey.
+fun sign(bitstring, skey): bitstring.
+fun checksig(bitstring, pkey): bitstring.
+fun cert(bitstring, bitstring): bitstring.  (* 证书 = cert(ID, 公钥) *)
+
+(* ===== 通道与常量声明 ===== *)
+free c: channel.         (* 公共通道 *)
+free g: group.           (* 群生成元 *)
+
+(* ===== 身份与密钥 ===== *)
+free A_ID, B_ID: bitstring.
+
+free skA, skB: skey [private].      (* A 和 B 的私钥 *)
+equation pk(skA) = pkA.
+equation pk(skB) = pkB.
+(* ===== CA 密钥（私有） ===== *)
+free CA_sk: skey [private].
+let CA_pk = pk(CA_sk).
+
+(* ===== 查询声明 ===== *)
+(* 密钥泄露检查 *)
+query x: sessionkey; attacker(x).
+
+(* 完整性验证：如果 B 完成会话，则 A 必须已发起 *)
+query a_id: bitstring, b_id: bitstring, sk: sessionkey;
+  event(endB(a_id, b_id, sk)) ==> event(endA(a_id, b_id, sk)).
+
+
+(* ===== A 过程 ===== *)
+let A =
+  new a: exp;
+  let A_pub = g_exp(g, a) in
+  let A_pub_bits = encode_group(A_pub) in
+  let certA = sign(cert(A_ID, A_pub_bits), CA_sk) in
+
+  (* 发送证书和公钥 *)
+  out(c, A_ID);
+  out(c, certA);
+  out(c, A_pub_bits);
+
+  (* 接收 B 的证书与公钥 *)
+  in(c, B_ID_rcv: bitstring);
+  in(c, certB: bitstring);
+  in(c, B_pub_bits: bitstring);
+
+  (* 验证 B 的证书 *)
+  let certB_check = checksig(certB, CA_pk) in
+  if certB_check = cert(B_ID_rcv, B_pub_bits) then
+    let B_pub = decode_group(B_pub_bits) in
+    let shared = h(mult(B_pub, A_pub)) in
+    event endA(A_ID, B_ID_rcv, shared).
+
+(* ===== B 过程 ===== *)
+let B =
+  new b: exp;
+  let B_pub = g_exp(g, b) in
+  let B_pub_bits = encode_group(B_pub) in
+  let certB = sign(cert(B_ID, B_pub_bits), CA_sk) in
+
+  (* 接收 A 的证书 *)
+  in(c, A_ID_rcv: bitstring);
+  in(c, certA: bitstring);
+  in(c, A_pub_bits: bitstring);
+
+  (* 验证 A 的证书 *)
+  let certA_check = checksig(certA, CA_pk) in
+  if certA_check = cert(A_ID_rcv, A_pub_bits) then
+    let A_pub = decode_group(A_pub_bits) in
+
+    (* 发送 B 的证书 *)
+    out(c, B_ID);
+    out(c, certB);
+    out(c, B_pub_bits);
+
+    let shared = h(mult(A_pub, B_pub)) in
+    event endB(A_ID_rcv, B_ID, shared).
+
+process (!A) | (!B)

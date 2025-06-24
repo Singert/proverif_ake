@@ -1,70 +1,33 @@
-(* === 开启攻击路径输出 === *)
-set traceDisplay = long.
-
-(* === A 的身份常量 === *)
-const A_ID: bitstring.
-
 (* === 类型定义 === *)
-type exp.                  (* DH 指数类型（私钥） *)
-type group.                (* 群元素类型（如 g^x） *)
-type sessionkey.           (* 会话密钥类型 *)
-type skey.                 (* 签名私钥类型 *)
-type pkey.                 (* 签名公钥类型 *)
-type skey_enc.             (* 非对称加密私钥类型 *)
-type pkey_enc.             (* 非对称加密公钥类型 *)
+type exp.
+type group.
+type sessionkey.
+type skey.
+type pkey.
 
-(* === 群生成元 === *)
-free g: group.
-
-(* === 编码函数 === *)
-fun encode_group(group): bitstring.
-
-(* === 公钥函数 === *)
+(* === 函数定义 === *)
 fun pk(skey): pkey.
-fun pk_enc(skey_enc): pkey_enc.
+fun g_exp(group, exp): group.
+fun mult(group, group): group.
+fun encode_group(group): bitstring.
+fun decode_group(bitstring): group.
+fun h(bitstring): sessionkey.
 
-(* === 签名函数与验证 === *)
 fun sign(bitstring, skey): bitstring.
 fun checksig(bitstring, pkey): bitstring.
 equation forall m: bitstring, sk: skey;
   checksig(sign(m, sk), pk(sk)) = m.
 
-(* === 非对称加解密函数 === *)
-fun asymenc(bitstring, pkey_enc): bitstring.
-fun asymdec(bitstring, skey_enc): bitstring.
-equation forall m: bitstring, k: skey_enc;
-  asymdec(asymenc(m, pk_enc(k)), k) = m.
+fun cert(bitstring, bitstring): bitstring.  (* 身份 + 公钥编码 *)
 
-(* === DH 安全共享函数 === *)
-fun g_exp(group, exp): group.
-fun exp_add(exp, exp): exp.
-fun shared_dh(exp, group): group [private].
-equation forall G: group, x: exp, y: exp;
-  shared_dh(x, g_exp(G, y)) = g_exp(G, exp_add(x, y)).
-
-
-(* === 会话密钥导出函数 === *)
-fun h(group): sessionkey.
-
-(* === 构造器与解构器 === *)
-fun pair(bitstring, bitstring): bitstring.
-fun proj1(bitstring): bitstring.
-fun proj2(bitstring): bitstring.
-equation forall x: bitstring, y: bitstring;
-  proj1(pair(x, y)) = x.
-equation forall x: bitstring, y: bitstring;
-  proj2(pair(x, y)) = y.
-
-(* === 通信信道 === *)
+(* === 常量 === *)
+free g: group.
 free c: channel.
 
-(* === 密钥定义 === *)
-free pkA: pkey.
-free skA: skey [private].
-free pkB: pkey.
-free skB: skey [private].
-free pkB_enc: pkey_enc.
-free skB_enc: skey_enc [private].
+free A_ID, B_ID: bitstring.
+free CA_pk: pkey.     (* CA 的公钥 *)
+free skA, skB: skey [private].
+free CA_sk: skey [private].  (* 仅 CA 拥有签名密钥 *)
 
 (* === 事件定义 === *)
 event beginA(bitstring, bitstring, sessionkey).
@@ -73,53 +36,64 @@ event beginB(bitstring).
 event endB(bitstring, bitstring, sessionkey).
 
 (* === 查询定义 === *)
-query x: sessionkey; attacker(x).
-
-query idA: bitstring, idB: bitstring, sk: sessionkey;
-  event(endB(idA, idB, sk)) ==> event(beginA(idA, idB, sk)).
-
-query a_id: bitstring, b_id: bitstring, sk: sessionkey;
-  event(endA(b_id, sk)) ==> event(endB(a_id, b_id, sk)).
-
-(* === A 的过程 === *)
-let A =
-  new a: exp;
-  let A_pub = g_exp(g, a) in
-  let sigA = sign(encode_group(A_pub), skA) in
-
-  out(c, A_ID);
-  out(c, sigA);
-  out(c, A_pub);
-
-  in(c, B_pub: group);
-  in(c, sigB: bitstring);
-
-  let verifiedB = checksig(sigB, pkB) in
-  if verifiedB = encode_group(B_pub) then
-    let shared = h(shared_dh(a, B_pub)) in
-    event beginA(A_ID, encode_group(B_pub), shared);
-    event endA(encode_group(B_pub), shared)
-  else 0.
-
-(* === B 的过程 === *)
-let B =
-  new b: exp;
-  let B_pub = g_exp(g, b) in
-  let sigB = sign(encode_group(B_pub), skB) in
-
-  in(c, id: bitstring);
-  in(c, sigA: bitstring);
-  in(c, A_pub: group);
-
-  let verified = checksig(sigA, pkA) in
-  if verified = encode_group(A_pub) then
-    let shared = h(shared_dh(b, A_pub)) in
-    event beginB(encode_group(A_pub));
-    out(c, B_pub);
-    out(c, sigB);
-    event endB(id, encode_group(B_pub), shared)
-  else 0.
+query x: sessionkey; attacker(x).  (* 保密性 *)
+query a: bitstring, b: bitstring, k: sessionkey;
+    event(endA(b,k)) ==> event(beginB(a)).  (* A 接收到的密钥确实由 B 发起 *)
+query a: bitstring, b: bitstring, k: sessionkey;
+    event(endA(b,k)) ==> event(endB(a,b,k)).  (* 密钥一致性 *)
 
 (* === 主进程 === *)
 process
-  (!A) | (!B)
+(
+  (* A 侧 *)
+  new a: exp;
+  let A_pub = g_exp(g, a) in
+  let A_pub_bits = encode_group(A_pub) in
+  let certA = cert(A_ID, A_pub_bits) in
+  let sig_certA = sign(certA, CA_sk) in  (* 由 CA 签名 *)
+
+  out(c, A_ID);
+  out(c, A_pub_bits);
+  out(c, sig_certA);
+
+  in(c, B_ID_recv: bitstring);
+  in(c, B_pub_bits_recv: bitstring);
+  in(c, sig_certB_recv: bitstring);
+
+  let certB_check = cert(B_ID_recv, B_pub_bits_recv) in
+  let verified_certB = checksig(sig_certB_recv, CA_pk) in
+
+  if verified_certB = certB_check then
+    let B_pub = decode_group(B_pub_bits_recv) in
+    let shared = h(encode_group(mult(B_pub, A_pub))) in
+    event beginA(A_ID, B_ID_recv, shared);
+    event endA(B_ID_recv, shared)
+)
+
+|
+
+(
+  (* B 侧 *)
+  new b: exp;
+  let B_pub = g_exp(g, b) in
+  let B_pub_bits = encode_group(B_pub) in
+  let certB = cert(B_ID, B_pub_bits) in
+  let sig_certB = sign(certB, CA_sk) in  (* 由 CA 签名 *)
+
+  in(c, A_ID_recv: bitstring);
+  in(c, A_pub_bits_recv: bitstring);
+  in(c, sig_certA_recv: bitstring);
+
+  let certA_check = cert(A_ID_recv, A_pub_bits_recv) in
+  let verified_certA = checksig(sig_certA_recv, CA_pk) in
+
+  if verified_certA = certA_check then
+    out(c, B_ID);
+    out(c, B_pub_bits);
+    out(c, sig_certB);
+
+    let A_pub = decode_group(A_pub_bits_recv) in
+    let shared = h(encode_group(mult(A_pub, B_pub))) in
+    event beginB(A_ID_recv);
+    event endB(A_ID_recv, B_ID, shared)
+)
